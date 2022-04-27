@@ -16,6 +16,10 @@ import javax.persistence.OneToMany;
 import javax.persistence.Table;
 
 
+import org.hibernate.annotations.ForeignKey;
+import org.hibernate.annotations.NotFound;
+import org.hibernate.annotations.NotFoundAction;
+
 import org.junit.Before;
 import org.junit.Test;
 
@@ -33,14 +37,34 @@ public class NonNullableManyToOneTest extends BaseReactiveTest {
 		Artist artist = new Artist( "Grand Master Painter" );
 		artist.id = 1L;
 		Dealer dealer = new Dealer( "Dealer" );
-		dealer.id = 1L;
+		dealer.id = 2L;
+		Dealer dealerToBeDeleted = new Dealer( "No one remembers" );
+		dealerToBeDeleted.id = 3L;
 		Painting painting = new Painting( "Mona Lisa" );
-		painting.id = 2L;
+		painting.id = 4L;
+
+		Painting paintingMissingDealer = new Painting( "Mona Lisa Missing Dealer" );
+		paintingMissingDealer.id = 5L;
+
 		artist.addPainting( painting );
+		artist.addPainting( paintingMissingDealer );
+
 		dealer.addPainting( painting );
+		dealerToBeDeleted.addPainting( paintingMissingDealer );
 
 		test( context, getMutinySessionFactory()
-				.withTransaction( s -> s.persistAll( painting, artist, dealer ) ) );
+				.withTransaction( s -> s.persistAll(
+						painting,
+						paintingMissingDealer,
+						artist,
+						dealerToBeDeleted,
+						dealer
+				) ).eventually( () -> {
+					test(
+							context,
+							getMutinySessionFactory().withTransaction( s -> s.remove( s.getReference( dealerToBeDeleted ) ) )
+					);
+				} ) );
 	}
 
 	@Test
@@ -51,12 +75,13 @@ public class NonNullableManyToOneTest extends BaseReactiveTest {
 						.getSingleResult().chain( a -> session.fetch( a.paintings ) )
 						.invoke( paintings -> {
 							context.assertNotNull( paintings );
-							context.assertEquals( 1, paintings.size() );
+							context.assertEquals( 2, paintings.size() );
 							context.assertEquals( "Mona Lisa", paintings.get( 0 ).name );
+							context.assertEquals( "Mona Lisa Missing Dealer", paintings.get( 1 ).name );
 						} ) )
 				.chain( () -> getMutinySessionFactory()
 						.withTransaction( s1 -> s1
-								.createQuery( "from Dealer", Dealer.class )
+								.createQuery( "from Dealer where name = 'Dealer'", Dealer.class )
 								.getSingleResult().chain( d -> s1.fetch( d.paintings ) )
 								.invoke( paintings -> {
 									context.assertNotNull( paintings );
@@ -65,6 +90,18 @@ public class NonNullableManyToOneTest extends BaseReactiveTest {
 								} )
 						)
 				)
+		);
+	}
+
+	@Test
+	public void testNonFoundExceptionWithMissingManyToOneReference(TestContext context) {
+		test( context, getMutinySessionFactory()
+				.withTransaction( session -> session
+						.createQuery( "from Painting where name = 'Mona Lisa Missing Dealer'", Painting.class )
+						.getSingleResult().chain( a -> session.fetch( a.author ) )
+						.invoke( a -> {
+							context.assertNotNull( a );
+						} ) )
 		);
 	}
 
@@ -80,7 +117,9 @@ public class NonNullableManyToOneTest extends BaseReactiveTest {
 		Artist author;
 
 		@JoinColumn(nullable = true)
-		@ManyToOne(optional = false)
+		@ManyToOne(optional = true)
+		@ForeignKey(name = "none")
+		@NotFound(action = NotFoundAction.EXCEPTION)
 		Dealer dealer;
 
 		public Painting() {
